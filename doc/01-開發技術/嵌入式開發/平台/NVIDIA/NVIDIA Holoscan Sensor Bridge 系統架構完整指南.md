@@ -8,7 +8,7 @@ tags:
   - 嵌入式
   - EdgeAI
 created: 2026-07-20
-modified: 2026-07-20
+modified: 2026-07-21
 aliases:
   - HSB
   - Sensor Bridge
@@ -281,6 +281,43 @@ flowchart TD
     
 - **細線 (事件通知)**：只有在整張畫面寫入 GPU 完成後，網卡才會發送中斷通知 CPU (步驟 9-10)，APP 隨即呼叫 TensorRT 進行推論。
     
+
+### 8.1 簡化架構圖：主機端與邊緣端分工
+
+以下流程圖以更簡潔的方式呈現 Host Side 與 Edge Side 的內部元件，以及控制平面與資料平面的連線：
+
+```mermaid
+graph TD
+    %% 設定主機端組件
+    subgraph Host_Side [運算主機 Host Side]
+        APP[Holoscan APP]
+        CPU[Host CPU / Kernel]
+        NIC[ConnectX SmartNIC]
+        GPU[GPU VRAM]
+    end
+
+    %% 設定邊緣端組件
+    subgraph Edge_Side [邊緣端 Edge Side]
+        FPGA[Sensor Bridge FPGA]
+        SENSOR[Camera Sensor]
+    end
+
+    %% 控制平面連線 (使用點線)
+    APP -.->|RDMA 註冊| CPU
+    CPU -.->|Memory Key| NIC
+    APP -.->|UDP 設定| FPGA
+    FPGA -.->|I2C 控制| SENSOR
+
+    %% 資料平面連線 (使用實線)
+    SENSOR -->|Raw MIPI| FPGA
+    FPGA -->|RoCE v2 封包| NIC
+    NIC -->|PCIe P2P DMA| GPU
+    GPU -->|TensorRT 推論| APP
+```
+
+此圖強調了兩點：
+1. **控制平面**（虛線）：由 Host CPU 與 APP 負責記憶體註冊與參數設定。
+2. **資料平面**（實線）：影像資料從 Sensor 經由 FPGA 與 NIC 直接寫入 GPU，完全繞過 CPU。
 
 ---
 
