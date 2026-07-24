@@ -34,6 +34,68 @@
 
 > **注意：** `&uart0` 等標籤必須符合您平台 DTS 中定義的硬體實體。修改完畢後需重新編譯 `.dtb` 檔案並替換，重開機即生效。
 
+### 機制原理：為何是 `serialN` 而不是 `uartN`？
+
+初次看到 `serial1 = &uart0` 的寫法，你可能會疑惑：為什麼別名前綴必須是 `serial`？寫 `uart1 = &uart0` 可以嗎？
+
+**答案是不行。** 這不是 Device Tree 的通用規則，而是 kernel 各子系統主動查詢 aliases 的結果。
+
+#### 查詢流程
+
+Kernel 提供一個通用 API — `of_alias_get_id()`，讓各子系統從 `/aliases` 中查找屬於自己的編號。serial 子系統傳入的參數是 `"serial"`：
+
+```mermaid
+flowchart TD
+    A["serial 驅動註冊 port"] --> B["呼叫 of_alias_get_id(np, &quot;serial&quot;)"]
+    B --> C["遍歷 /aliases 下所有屬性"]
+    C --> D{"屬性名以<br>serial&lt;數字&gt; 開頭？"}
+    D -->|是| E{"phandle 指向<br>此 device node？"}
+    D -->|否| F[跳過]
+    E -->|是| G["回傳數字作為 port->line"]
+    E -->|否| F
+    F --> C
+    G --> H["產生 /dev/ttyS&lt;數字&gt;"]
+```
+
+#### 核心 API：`of_alias_get_id()`
+
+定義於 `drivers/of/base.c`：
+
+```c
+int of_alias_get_id(struct device_node *np, const char *stem);
+```
+
+- `np`：要查詢的硬體節點（如 `uart0`）
+- `stem`：Alias 前綴字串（如 `"serial"`）
+- 回傳值：比對成功回傳編號，否則回傳負數
+
+serial 子系統在 `drivers/tty/serial/serial_core.c` 中實際呼叫：
+
+```c
+id = of_alias_get_id(np, "serial");
+if (id >= 0)
+    port->line = id;  /* 強制指定 ttyS 編號 */
+```
+
+#### 各子系統的 alias 約定
+
+這不是 serial 的專利。每個 kernel 子系統都會用不同的 `stem` 查詢 aliases：
+
+| 子系統 | Alias 格式 | Kernel 查詢呼叫 | 產生的名稱 |
+|--------|-----------|----------------|-----------|
+| Serial | `serial0`, `serial1`... | `of_alias_get_id(np, "serial")` | `/dev/ttyS0` |
+| Ethernet | `ethernet0`, `ethernet1`... | `of_alias_get_id(np, "ethernet")` | `eth0` |
+| I2C | `i2c0`, `i2c1`... | `of_alias_get_id(np, "i2c")` | `/dev/i2c-0` |
+| SPI | `spi0`, `spi1`... | `of_alias_get_id(np, "spi")` | `spi0` |
+| GPIO | `gpio0`, `gpio1`... | `of_alias_get_id(np, "gpio")` | `gpiochip0` |
+| MMC | `mmc0`, `mmc1`... | `of_alias_get_id(np, "mmc")` | `/dev/mmcblk0` |
+
+#### 重點整理
+
+- **只認 `serialN`**：serial core 寫死查詢 `of_alias_get_id(np, "serial")`，只有 `serial` 前綴的 alias 會生效
+- **`uartN` 完全無效**：serial core 根本不會去看 `uart` 開頭的 alias，寫了也不起作用
+- **想知道其他子系統的 alias 前綴？** 直接查該子系統源碼中 `of_alias_get_id()` 的第一個參數即可
+
 ## 3. 方案 B：使用 Udev 規則 (適用於 x86 / PCIe / USB 擴充卡)
 
 如果系統架構無法修改 Device Tree，或者使用的是外接擴充卡，請使用 `udev` 規則來綁定硬體。
@@ -128,8 +190,10 @@ static struct uart_driver serial8250_reg = {
     
 2. 接著，當驅動程式在硬體上實際掃描到一個實體的 UART 埠口時（例如掃到了第 0 個），它會呼叫 `uart_add_one_port()`。
     
-3. 核心的 TTY 子系統 (TTY Core) 會拿出剛剛註冊的 `.dev_name` (`"ttyS"`)，加上流水號 (`0`)，組合成 `"ttyS0"`。
-    
+3. 核心的 TTY 子系統 (TTY Core) 會拿出剛剛註冊的 `.dev_name` (`"ttyS"`)，加上流水號，組合成 `"ttyS0"`。
+
+> **關鍵細節：** 步驟 3 中的「流水號」並非總是從 0 開始遞增。在 Device Tree 平台中，`uart_add_one_port()` 內部會呼叫 `of_alias_get_id(np, "serial")` 查詢 `/aliases`。若有設定 `serial1 = &uart0`，則 uart0 的流水號會被強制指定為 `1`，最終產生 `ttyS1`。詳見前文 [2.1 機制原理](#機制原理為何是-serialn-而不是-uartn)。
+
 4. 最後，核心將這個名稱與事件丟給使用者空間的 `udev`，您的 `/dev/` 目錄下就誕生了 `/dev/ttyS0`。
     
 

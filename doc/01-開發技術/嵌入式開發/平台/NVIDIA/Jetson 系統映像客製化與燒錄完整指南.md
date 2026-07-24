@@ -42,7 +42,7 @@ flowchart TD
     G2 --> H{選擇燒錄方式}
     H --> I1[USB 開機磁碟]
     H --> I2[Massflash 批量燒錄]
-    H --> I3[Jetson ISO 方式]
+    H --> I3[交付部署套件]
 ```
 
 > [!TIP] 工具選擇
@@ -342,34 +342,38 @@ sudo ./l4t_initrd_flash.sh \
 
 ## 7. Jetson ISO 方式
 
-Jetson ISO 是從 L4T R36 開始支援的部署方式，產生一個完整的可開機映像檔，類似 Ubuntu 安裝 ISO，適合終端使用者自行安裝。
+Jetson ISO 是 NVIDIA 提供的**預先建置安裝映像**，類似 Ubuntu 安裝 ISO，讓終端使用者無需主機即可將 BSP 安裝到 Jetson 裝置。
 
-### 7.1 產生 ISO
+> [!IMPORTANT] ISO 是預建映像，非客製化工具
+> Jetson ISO 由 NVIDIA 官方提供下載（如 `jetsoninstaller-r39.2.0-*.iso`），**不是**從客製化 BSP 產生的工具。BSP 中**沒有** `create_iso.sh` 腳本。若需交付客製化映像，請使用 Massflash 方式（參見 8.2）或 USB 開機碟方式（參見 6.2）。
 
-```bash
-# 先產生完整系統映像
-sudo ./l4t_initrd_flash.sh \
-  -c tools/kernel_flash/flash_l4t_t264_nvme.xml \
-  --no-flash \
-  jetson-agx-thor-devkit internal
+### 7.1 下載 Jetson ISO
 
-# 產生 ISO（需 BSP 支援 create_iso.sh）
-sudo ./tools/kernel_flash/create_iso.sh \
-  -c bootloader/jetson-agx-thor-devkit/ \
-  -o jetson-thor-custom.iso
-```
+從 NVIDIA 開發者網站下載對應版本的 ISO：
 
-> [!WARNING] 腳本可用性
-> `create_iso.sh` 的支援度依 L4T 版本而異。Thor (R39) 需確認 BSP 是否包含該腳本。若不支援，可使用 USB 開機碟方式替代（參見 6.2）。
+- **Thor (R39.2)**：`jetsoninstaller-r39.2.0-*.iso`
+- **Orin (R36.5+)**：對應版本的 `jetsoninstaller-*.iso`
 
-### 7.2 使用 ISO 安裝
+下載頁面：[JetPack Downloads](https://developer.nvidia.com/embedded/jetpack/downloads)
 
-1. 寫入 USB：`sudo dd if=jetson-thor-custom.iso of=/dev/sdX bs=4M status=progress`
-2. 插入目標板 USB 埠
-3. 開機進入 UEFI，選擇 USB 為開機裝置
-4. 系統自動引導安裝流程
+### 7.2 製作安裝 USB
 
-### 7.3 各部署方式比較
+> [!CAUTION] 不可直接複製 ISO 到 USB
+> 必須使用 Etcher 等工具製作可開機 USB，直接複製 ISO 檔案無法開機。
+
+1. 下載 [Balena Etcher](https://etcher.balena.io/)
+2. 選擇下載的 ISO 映像檔
+3. 選擇 USB 隨身碟（建議 16GB 以上）
+4. 點擊 Flash 寫入
+
+### 7.3 使用 ISO 安裝
+
+1. 將 Jetson 目標板接上顯示器、鍵盤、滑鼠
+2. 插入安裝 USB
+3. 開機後自動從 USB 啟動
+4. 依照安裝介面引導完成 BSP 安裝
+
+### 7.4 各部署方式比較
 
 | 方式 | 適合場景 | 門檻 | 彈性 |
 |------|----------|------|------|
@@ -390,13 +394,10 @@ flowchart LR
     B --> C{選擇交付方式}
     C --> D[Massflash 單一包]
     C --> E[精簡 Linux_for_Tegra 手動包]
-    C --> F[客製化 ISO]
-    D --> G[交付: 單一 tar.gz]
-    E --> H[交付: 最小化檔案結構]
-    F --> I[交付: ISO 檔案]
-    G --> J[使用者: 解壓 → 接板 → 執行 flash]
-    H --> J
-    I --> J
+    D --> F[交付: 單一 tar.gz]
+    E --> G[交付: 最小化檔案結構]
+    F --> H[使用者: 解壓 → 接板 → 執行 flash]
+    G --> H
 ```
 
 ### 8.1 整體策略選擇
@@ -405,7 +406,6 @@ flowchart LR
 |------|----------|----------|----------|---------------|
 | Massflash 單一包 | 產線、客戶 | 中等（壓縮） | 低 | 最低 |
 | 精簡 Linux_for_Tegra | 開發團隊內部 | 較大 | 中 | 低 |
-| 客製化 ISO | 終端使用者 | 大 | 視 BSP 支援 | 最低 |
 
 ### 8.2 方法一：Massflash 批量燒錄包（推薦）
 
@@ -541,18 +541,18 @@ jetson-thor-custom-image-v1.0/
 
 ### 8.6 各交付方式對照
 
-| 考量 | Massflash | 手動精簡包 | 客製化 ISO |
-|------|-----------|------------|-----------|
-| 準備難度 | 低（單一指令） | 中（需手動篩選檔案） | 中（需 BSP 支援） |
-| 交付大小 | 最小（壓縮） | 中等 | 最大 |
-| 使用者操作步驟 | 3 步 | 3-4 步 | 2 步（dd + 開機） |
-| 適用對象 | 產線、客戶 | 開發團隊 | 終端使用者 |
-| 可重複使用性 | 高 | 高 | 低（單一用途） |
+| 考量 | Massflash | 手動精簡包 |
+|------|-----------|------------|
+| 準備難度 | 低（單一指令） | 中（需手動篩選檔案） |
+| 交付大小 | 最小（壓縮） | 中等 |
+| 使用者操作步驟 | 3 步 | 3-4 步 |
+| 適用對象 | 產線、客戶 | 開發團隊 |
+| 可重複使用性 | 高 | 高 |
 
 > [!TIP] 建議
 > - **對外交付（客戶/產線）**：使用 Massflash，最簡潔可靠
 > - **團隊內部共享**：使用手動精簡包，保留調整彈性
-> - **終端使用者自行安裝**：使用客製化 ISO（若 BSP 支援）
+> - **終端使用者安裝標準 BSP**：使用 NVIDIA 官方 Jetson ISO（非客製化，參見第 7 節）
 
 ---
 
@@ -564,7 +564,7 @@ jetson-thor-custom-image-v1.0/
 | **分區配置檔** | `flash_l4t_t264_nvme.xml` | `flash_l4t_t234_nvme.xml` |
 | **目標板名稱** | `jetson-agx-thor-devkit` | `jetson-agx-orin-devkit` |
 | **Bootloader** | T264 TegraBoot + UEFI | T234 TegraBoot + UEFI |
-| **Jetson ISO** | 需確認 BSP 支援 | R36.3+ 官方支援 |
+| **Jetson ISO** | 官方預建安裝映像下載 | 官方預建安裝映像下載 |
 | **開機流程** | BCT → TegraBoot → UEFI → Kernel | 同左 |
 | **A/B Rootfs** | 支援 | 支援 |
 
