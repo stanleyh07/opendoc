@@ -1,6 +1,6 @@
 已知有三個 branch，main、develop、testing，當前 checkout 在 main branch 上，
 如何在不影響當前 workspace，以及不切換到其他 branch 條件下，
-讓 develop merge 到 testing
+讓 develop 轉移到 testing
 
 ```
 git update-ref refs/heads/develop refs/heads/testing
