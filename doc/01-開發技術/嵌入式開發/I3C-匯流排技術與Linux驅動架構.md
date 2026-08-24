@@ -6,10 +6,13 @@ tags:
   - i3c
   - ibi
   - interrupt
+  - multi-master
+  - master-handoff
+  - arbitration
   - linux-kernel
   - device-tree
 created: 2026-08-13
-modified: 2026-08-13
+modified: 2026-08-24
 aliases:
   - I3C
   - MIPI I3C
@@ -54,6 +57,41 @@ I3C 能夠在相同的 SCL/SDA 線路上完美向下相容 I2C 設備，同時�
 
 * **Open-Drain (開汲極)：** 用於通訊初期、位址仲裁 (DAA) 或與傳統 I2C 設備溝通。
 * **Push-Pull (推挽)：** 當主機確認通訊對象是 I3C 設備並進入純資料傳輸階段時，硬體瞬間切換為推挽模式，將時脈推升至 12.5MHz，徹底消除上拉電阻帶來的電容延遲與靜態功耗。
+
+#### 2.1.1 Push-Pull 驅動與外部 Pull-Up 共存的原則
+
+> [!IMPORTANT] 常見疑慮：Push-Pull 驅動 High 遇到外部 Pull-Up 會短路嗎？
+> **答案是完全不會。**
+
+在 I3C 匯流排中，為了兼顧向後相容 I2C 以及實現高速傳輸，訊號腳位 (SDA/SCL) 會在兩種驅動模式之間動態切換。當 Push-Pull 輸出 High 時與外部 Pull-Up 電阻並存，不會產生短路，原因有二：
+
+- **物理原理 (電位相等)**：當 Push-Pull 電路輸出 High 時，內部的 PMOS 導通，將腳位連接至系統的 VDD；而外部的 Pull-Up 電阻同樣連接至同一個 VDD。兩端電位相等（$\Delta V = 0$），不會產生電流。
+- **阻抗優勢**：PMOS 導通時的內阻極低（幾十歐姆），而 Pull-Up 電阻通常較大（如 $4.7 k\Omega$）。電流會優先通過低阻抗路徑，因此腳位電位完全由 Master 主導，Pull-Up 電阻形同虛設，沒有負面影響。
+
+```mermaid
+flowchart LR
+    subgraph Master["Master 內部 (Push-Pull)"]
+        VDD1[VDD 電源]
+        PMOS[PMOS 導通<br>內阻極低 數十Ω]
+    end
+    SDA((SDA 腳位))
+    subgraph External["外部上拉電路"]
+        PULL[Pull-Up 電阻<br>如 4.7 kΩ]
+        VDD2[VDD 電源]
+    end
+    VDD1 --> PMOS --> SDA
+    VDD2 --> PULL --> SDA
+
+    style PMOS fill:#d4edda,stroke:#28a745
+    style PULL fill:#e2e3e5,stroke:#6c757d
+```
+
+> 兩端皆接同一個 VDD，電位相等（$\Delta V = 0$），故無電流；且 PMOS 內阻遠小於 Pull-Up，腳位電位由 Master 主導。
+
+> [!WARNING] Bus Contention (匯流排衝突) — 真正的硬體風險
+> 若一個裝置用 Push-Pull 驅動 High (連 VDD)，同時另一個裝置驅動 Low (連 GND)，會產生低阻抗的直接短路 (Shoot-through current)，這會產生極大電流，可能燒毀 IC。
+>
+> **I3C 協議如何避免衝突？** I3C 強制規定，在可能有多個裝置同時嘗試控制總線的**仲裁階段（如 START 條件、發送位址、ACK/NACK、IBI）**，所有裝置**只能使用 Open-Drain 模式**。在 Open-Drain 模式下，大家只能「拉低電位」或「放開不拉」，物理上不可能發生 VDD 直接對地短路的情況。只有當 Master 確認總線上沒有競爭者時，才會切換到 Push-Pull 模式進行高速傳輸。
 
 ### 2.2 廣播位址與突波濾波 (Spike Filter) 隔離法
 
@@ -183,7 +221,7 @@ IBI 沿用匯流排既有仲裁能力，規則如下：
    - 用 **SETNEWDA CCC** 重新分配動態位址，重新平衡優先權。
    - I3C HCI v1.2 控制器可用硬體的 **credit counting** 機制自動執行上述 ENEC/DISEC。
 3. **設備側自律**：Target 可實作內部中斷佇列（依優先權或先後順序），或 IBI rate-limiting 機制抑制連續請求；規格不限制 IBI 的類型與頻率。
-4. **Hot-Join 特例**：多台設備可同時對保留位址 `7'h02` 發出無 payload 的 Hot-Join 請求（皆以同一地址仲裁），Controller ACK 後承諾執行 ENTDAA 逐一分配位址。
+4. **Hot-Join 特例**：多台設備可同時對保留位址 `7'h02` 發出無 payload 的 Hot-Join 請求（皆以同一位址仲裁），Controller ACK 後承諾執行 ENTDAA 逐一分配位址。
 
 ### 4.4 IBI 觸發時序圖
 
@@ -295,3 +333,93 @@ i3c-master@4000000 {
 
 > [!TIP] `#address-cells = <3>` 的意義
 > I3C 設備的 `reg` 由三段組成：`<I2C 靜態位址, PID 高 16 位元, PID 低 32 位元>`。純 I3C 設備靜態位址填 `0x0`；混合設備填其 I2C 靜態位址（如 `0x50`）以觸發 SETDASA 快速分配；傳統 I2C 設備 PID 兩段填 `0x0`。
+
+---
+
+## 6. Multi-Master 多控制器與控制權交接 (Mastership Handoff)
+
+> 前文中 IBI 機制主要扮演「從屬端對主機的中斷通知」，但 I3C 同時支援**多控制器**架構：一個具備 Master 能力的 Secondary Master 可藉由 IBI（Controller Role Request, CRR）向現任 Active Master 申請接管總線。本章深入此權力交接的完整流程。
+
+### 6.1 多控制器架構 (Multi-Master) 與角色定義
+
+不同於 I2C 允許多個 Master 隨時競爭，I3C 在「同一個時間點」只允許**一個**正在產生時脈 (Clock) 並主導總線的 **Active Master**。I3C 定義了以下不同的 Master 角色：
+
+| 角色 | 說明 |
+| --- | --- |
+| **Main Master** | 系統上電時唯一的控制者，負責分配動態位址 (DA)。 |
+| **Secondary Master (SM)** | 硬體具備 Master 能力，但開機時以 Slave 身分運作。 |
+| **Active Master (AM)** | 當下真正握有 SCL 控制權、主導總線的裝置。 |
+
+當 Secondary Master 想要主動發起通訊時，必須透過一套名為 **Mastership Handoff (控制權交接)** 的機制，向當前的 Active Master 申請接管總線。就 IBI 分類而言，這對應 [[I3C-匯流排技術與Linux驅動架構#4.6 IBI / Hot-Join / CRR 比較|4.6 中的 CRR (Controller Role Request)]]。
+
+```mermaid
+flowchart LR
+    Main[Main Master<br>上電唯一控制者<br>分配動態位址 DA]
+    SM[Secondary Master<br>硬體具備 Master 能力<br>開機時以 Slave 運作]
+    AM[Active Master<br>當下握有 SCL<br>主導總線]
+
+    Main -->|上電初始化| AM
+    SM -.->|IBI CRR + Mastership Handoff<br>向現任 AM 申請接管| AM
+    AM -->|交接完成<br>放開 SCL| AM2[(新的 Active Master)]
+```
+
+### 6.2 權力交接完整流程 (Mastership Handoff)
+
+這個交接過程精妙地結合了「非同步中斷」、「硬體位元仲裁」以及「嚴格的狀態機指令」。
+
+#### 階段一：發起請求與硬體仲裁 (IBI - In-Band Interrupt)
+
+此階段 SM 的身分是 Slave，無權發出 SCL，必須「借用」AM 的 SCL 來表達訴求。
+
+1. **等待總線閒置**：當總線處於閒置 (Bus Idle)，SDA 和 SCL 皆為 High。
+2. **非同步觸發 (拉低 SDA)**：SM 主動將 SDA 拉低（不碰 SCL）。這相當於一個非同步的中斷訊號。
+3. **提供 Clock**：AM 察覺 SDA 突然變低，判斷有設備要發起 IBI 中斷，於是開始主動發出 SCL Clock。
+4. **發送位址與位元仲裁 (Bit-by-Bit Arbitration)**：
+   * SM 藉著 AM 提供的 SCL，在 SDA 上打出自己的**動態位址 (DA)**。
+   * **衝突解決**：如果同時有多個 SM（或 Slave）發起中斷，大家會同時輸出位址。由於此階段強制為 Open-Drain，具備「線與 (Wired-AND)」特性，即 `0` (拉低) 贏過 `1` (放開)。
+   * 在逐位元發送位址的過程中，只要裝置發現自己輸出了 `1`，但從 SDA 讀回來的電位卻是 `0`，該裝置的硬體就會判定自己**優先權較低 (位址數值較大)**，並立即停止傳送 (認輸)。
+   * 最終，位址最小 (擁有最多 `0`) 的設備贏得仲裁。
+
+#### 階段二：驗明意圖與交出權杖
+
+假設 SM 贏得了仲裁，成功傳送完自己的 DA，接下來進入交接確認階段。此時 **SCL 依然由原本的 AM 提供**。
+
+1. **傳送 Mandatory Data Byte (MDB)**：
+   SM 緊接著 DA 之後，必須發送一個特定的 MDB（例如 `0x0B` 代表 Master Role Request）。這明確告訴 AM：「我是來申請控制權的，不是要傳遞感測器數據」。AM 收到後回覆 ACK。
+2. **重啟命令模式 (Repeated START)**：
+   AM 決定交出控制權後，不會直接放開總線，而是發出 Repeated START (Sr) 條件，結束 IBI 中斷階段，準備發布系統指令。
+3. **發送交接指令 (GETACCMST)**：
+   AM 在總線上發出廣播位址 (`0x7E`)，接著發出特定指令碼 `0x91` (**GETACCMST**)，最後加上指定繼承人 (SM) 的動態位址 (DA)。這是一道具名的權力移交指令。
+4. **繼承人接旨 (ACK)**：
+   SM 聽到針對自己的 `GETACCMST` 指令，必須回覆一個 ACK，宣示硬體狀態機已準備好接管 SCL。
+5. **權力轉移的瞬間 (STOP Condition)**：
+   AM 收到 SM 的 ACK 後，發出 **STOP 條件 (P)**。就在產生 STOP 的瞬間，AM 徹底切斷自己對 SCL 的驅動，退化為 Slave。而 SM 偵測到 STOP 後，狀態機立刻晉升為 Active Master。交接完成，新的 Master 現在可以自由產生 SCL 展開新任務了。
+
+```mermaid
+sequenceDiagram
+    participant AM as Active Master (原主控)
+    participant Bus as SCL/SDA 匯流排
+    participant SM as Secondary Master<br>(候選繼承人)
+
+    Note over AM,Bus: 總線閒置 (SDA = SCL = High)
+    SM->>Bus: 拉低 SDA (非同步中斷訊號，不碰 SCL)
+    AM->>Bus: 察覺中斷，開始主動提供 SCL Clock
+    Note over SM: 借 AM 的 SCL，於 SDA 打出動態位址 DA
+    SM->>Bus: 逐位元發送 DA (Open-Drain Wire-AND 仲裁)
+    Note over SM: 多位競爭時，位址最小者勝 (發 1 讀回 0 者退讓)
+    AM-->>SM: 贏得仲裁 -> 回覆 ACK
+    Note over AM,SM: 階段一完成；SCL 仍由 AM 提供
+    SM->>Bus: 發送 MDB 0x0B (Master Role Request)
+    AM-->>SM: ACK (確認「申請控制權」之意圖)
+    Note over AM: 準備交接，進入命令模式
+    AM->>Bus: Repeated START (Sr) 結束 IBI 階段
+    AM->>Bus: 廣播位址 0x7E + CCC 0x91 (GETACCMST)<br>+ 指定繼承人 DA
+    SM-->>AM: ACK (宣告狀態機已準備接管 SCL)
+    AM->>Bus: STOP 條件 (P)
+    Note over AM: 產生 STOP 瞬間，切斷 SCL 驅動，退化為 Slave
+    Note over SM: 偵測到 STOP，狀態機晉升為 Active Master
+    Note over SM,AM: 交接完成，新 Master 可自由產生 SCL
+```
+
+> [!TIP] 為何交接發生在 STOP 的瞬間？
+> I3C 規定同時間只允許一個 Active Master。若主動 Master 仍在握有 SCL 的同時直接讓位，會造成過渡期驅動不明。透過在 **STOP 條件**的那一刻「同步」切換——原 AM 放開 SCL、候選 SM 則以硬體狀態機捕捉 STOP 後立即升格——得以在不產生 Bus Contention 的前提下完成無縫交接。
