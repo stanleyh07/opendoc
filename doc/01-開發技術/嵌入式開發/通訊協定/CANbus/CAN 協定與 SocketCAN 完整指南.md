@@ -8,7 +8,7 @@ tags:
   - embedded
   - networking
 created: 2026-08-19
-modified: 2026-08-19
+modified: 2026-08-25
 aliases:
   - CANBus 指南
   - SocketCAN 指南
@@ -273,11 +273,40 @@ sudo ip link set can0 up type can bitrate 500000
 sudo ip link set can0 up type can bitrate 500000 dbitrate 2000000 fd on
 
 # 查看介面狀態（含位元率、錯誤計數）
-ip -details link show can0
+ip -details -statistics link show can0
 
 # 關閉介面
 sudo ip link set can0 down
 ```
+
+#### 4.4.1 自動復原（restart-ms）
+
+```bash
+# 啟動介面並設定「進入 bus-off 後每 100ms 自動嘗試重啟」
+sudo ip link set can0 up type can bitrate 500000 restart-ms 100
+
+# 確認方式（輸出中可看到 restart-ms 100）
+ip -details -statistics link show can0
+```
+
+> [!IMPORTANT] 防止「一次錯誤就進 BUS-OFF 站不起來」
+> 未設定 restart-ms 時，bus-off 後必須等匯流排上出現 128 次連續 recessive 才能自復原；若故障一直存在（短路、拔線、網路上只有單一節點收不到 ACK 等），節點會**從此退出匯流排**。`restart-ms` 讓驅動主動重啟控制器，是降低「神秘斷線」的關鍵設定。完整狀態機說明見第 7 章。
+
+#### 4.4.2 啟動前檢查 pinmux 腳位功能
+
+```bash
+# 檢查 CAN 腳位是否已被 pinmux 分配到 CAN 功能（需 root）
+cat /sys/kernel/debug/pinctrl/*/pinmux-pins | grep -i can
+```
+
+- **有輸出**：腳位已配置為 CAN 功能（行動格式因 SoC 而異，搜尋到的行含 function/group 資訊），可正常啟動介面
+- **無輸出**：CAN 功能未啟用，可能原因：
+  - Device Tree 未啟用 CAN 節點或未配置 pinctrl group → 檢查 DTB（見 [[Device Tree Override 完整指南]]，NVIDIA 平台見 [[Jetson mttcan CAN 驗證指南]]）
+  - debugfs 未掛載或核心未編譯 `CONFIG_DEBUG_FS`（先確認 `/sys/kernel/debug/` 存在）
+  - 腳位被其他功能佔用 → 見 [[如何利用 pinctrl 動態變更 gpio alternative function]]
+
+> [!NOTE] 輸出格式隨 SoC 不同
+> `pinmux-pins` 的行格式與 function 命名由各 SoC 的 pinctrl 驅動決定，`grep -i can` 也可能撈到其他含 "can" 字串的名稱，請依輸出內容判斷實際配置。
 
 ```bash
 # 發送一幀：ID 0x123，資料 DE AD BE EF
@@ -572,6 +601,7 @@ sudo ip link set can0 up type can bitrate 500000
 
 > [!IMPORTANT] Bus-off 知識
 > 控制器連續錯誤超過 256 次會進入 **bus-off**，此時該節點完全退出匯流排（不參與任何訊號）。多數控制器需「監聽匯流排上 128 次連續 11-bit recessive」才自動恢復，或由驅動/使用者手動重啟。這是車載系統中最常見的「神秘斷線」原因。
+> 完整狀態轉換（ERROR-ACTIVE / ERROR-PASSIVE / BUS-OFF / STOPPED）與自動恢復設定，見第 7 章「CAN 錯誤狀態機與應對方式」。
 
 ### 6.8 CAN FD 實體測試
 
@@ -613,12 +643,77 @@ ip link set can0 up type can bitrate 500000
 # 建立 ISO-TP 連線（source:destination 皆為 11-bit ID）
 sudo ip link add link can0 type can_isotp tx-id 0x7E0 rx-id 0x7E8
 
-# 用 socket 發送多幀診斷請求（此處以 Python 範例說明，見第 8 章）
+# 用 socket 發送多幀診斷請求（此處以 Python 範例說明，見第 9 章）
 ```
 
 ---
 
-## 7. 除錯知識：症狀與原因對照
+## 7. CAN 錯誤狀態機與應對方式
+
+CAN 節點內部由**兩組錯誤計數器（TEC / REC）**驅動狀態機，計數值隨錯誤自動增減，狀態決定節點是否還能參與匯流排。理解這個狀態機，才能正確診斷「為什麼突然收不到資料」。
+
+### 7.1 五種狀態定義
+
+| 狀態 | 觸發條件 | 節點行為 | 對開發者的意義 |
+|------|----------|----------|----------------|
+| **ERROR-ACTIVE** | 預設狀態 | 完全參與匯流排，可發出**主動錯誤幀** | 正常運作 |
+| **ERROR-WARNING** | TEC 或 REC ≥ 96 | 核心標記警示（`CAN_STATE_ERROR_WARNING`） | 開始留意錯誤 |
+| **ERROR-PASSIVE** | TEC > 127 或 REC > 127 | 只能發送**被動錯誤幀**，不能干擾匯流排 | 實體層已有問題 |
+| **BUS-OFF** | TEC > 255 | 完全退出匯流排，不發送也不監聽 | 節點「消失」 |
+| **STOPPED** | `ip link set can0 down` | 控制器停止運作（link down） | 介面未啟動 |
+
+> [!NOTE] 計數器口徑
+> - **TEC**：傳送錯誤計數（Transmit Error Counter）
+> - **REC**：接收錯誤計數（Receive Error Counter）
+> - **bus-off 只由 TEC 觸發**（> 255）；REC 高只會達到 ERROR-PASSIVE，不會造成 bus-off
+> - 計數器會隨成功傳輸/接收**自動遞減**，因此電氣問題若能解決，狀態可自行退回前級（如 ERROR-PASSIVE → ERROR-ACTIVE）
+
+### 7.2 狀態轉換（mermaid）
+
+```mermaid
+stateDiagram-v2
+    [*] --> STOPPED: 介面 down
+    STOPPED --> ERROR_ACTIVE: ip link set can0 up
+    ERROR_ACTIVE --> ERROR_WARNING: TEC 或 REC ≥ 96
+    ERROR_WARNING --> ERROR_PASSIVE: TEC 或 REC > 127
+    ERROR_ACTIVE --> ERROR_PASSIVE: 計數驟增 > 127
+    ERROR_PASSIVE --> ERROR_ACTIVE: 計數遞減回門檻以下
+    ERROR_PASSIVE --> BUS_OFF: TEC > 255
+    BUS_OFF --> ERROR_ACTIVE: 偵測到 128×11-bit recessive
+    BUS_OFF --> STOPPED: 手動 down
+    BUS_OFF --> BUS_OFF: restart-ms 重啟失敗
+```
+
+### 7.3 觀察工具
+
+```bash
+# 即時觀察：can state、錯誤計數器、restart-ms、bus-off 累積次數
+ip -details -statistics link show can0
+
+# 重點欄位示意：
+# can state BUS-OFF (berr-counter tx 0 rx 0) restart-ms 100
+# 下方 statistics 區含 bus-off: 1（已發生的累積次數）
+```
+
+### 7.4 應對方式
+
+| 情境 | 應對方式 |
+|------|----------|
+| **預防（啟動時）** | up 時指定 `restart-ms 100`，bus-off 後自動重啟（見 4.4.1 節） |
+| **自動恢復** | restart-ms 生效時，驅動每指定毫秒嘗試重啟控制器，無需人工介入 |
+| **手動恢復** | `sudo ip link set can0 down && sudo ip link set can0 up type can bitrate 500000` |
+| **狀態卡在 ERROR-PASSIVE / 反覆 BUS-OFF** | 實體層持續有問題 → 檢查位元率一致性、終端電阻、共地、線材與 pinmux（見第 8 章除錯對照表） |
+
+> [!WARNING] 為何一定要設定 restart-ms
+> 未設定時，節點進 bus-off 後必須等匯流排上出現 **128 次連續 11-bit recessive** 才能自我恢復。若線路短路、斷線或對端持續送上錯誤，該條件永遠不成立，節點就**永久消失**在匯流排上——這是車載系統最常見的「神秘斷線」原因。設定 `restart-ms` 後，驅動會直接嘗試重啟控制器，而非坐等匯流排恢復乾淨。
+
+> [!TIP] 關聯知識
+> - 實體故障注入與 bus-off 觀察實作：見 6.7 節「錯誤與故障注入測試」
+> - NVIDIA Jetson 平台驗證：[[Jetson mttcan CAN 驗證指南]]
+
+---
+
+## 8. 除錯知識：症狀與原因對照
 
 ```mermaid
 flowchart TD
@@ -642,14 +737,14 @@ flowchart TD
 | 全部是錯誤幀 | 位元率不一致 | 兩端 `ip -d link show` 比對 |
 | 錯誤幀 + TX/RX error 遞增 | 無終端電阻 / 反接 / 未共地 | 量 CANH-CANL 阻抗約 60Ω |
 | 偶發丟幀 | 干擾、線長、接頭 | 降低位元率、換遮蔽雙絞線 |
-| `state bus-off` | 錯誤計數爆表 | 檢查實體層後 `down/up` 重啟 |
+| `state bus-off` | 錯誤計數爆表；故障未解決會反覆進入 | 檢查實體層後 `down/up` 重啟（或用 restart-ms 自動恢復，見第 7 章） |
 | 對端有設備卻收不到 | 對端沒 up 或不在發送 | `candump` 對端確認 |
 
 ---
 
-## 8. 程式開發基礎
+## 9. 程式開發基礎
 
-### 8.1 C 語言（原始 Socket 方式）
+### 9.1 C 語言（原始 Socket 方式）
 
 ```c
 #include <stdio.h>
@@ -688,7 +783,7 @@ int main(void) {
 }
 ```
 
-### 8.2 Python（python-can，開發速度最快）
+### 9.2 Python（python-can，開發速度最快）
 
 ```bash
 sudo pip install python-can
@@ -717,7 +812,7 @@ task = bus.send_periodic(can.Message(arbitration_id=0x456, data=[1, 2, 3, 4]), p
 
 ---
 
-## 9. 驗證流程總覽（速查）
+## 10. 驗證流程總覽（速查）
 
 ```mermaid
 flowchart TD
@@ -735,9 +830,10 @@ flowchart TD
 
 ---
 
-## 10. 相關文件
+## 11. 相關文件
 
-- [[Jetson mttcan CAN 驗證指南]] — NVIDIA Jetson 平台特定內容（mttcan 驅動、DTB、pinout）
+- [[Jetson mttcan CAN 驗證指南]] — NVIDIA Jetson 平台特定內容（mttcan 驅動、DTB、pinmux/Jetson-IO、收發器接線、平台注意事項）
+- [[如何利用 pinctrl 動態變更 gpio alternative function]] — pinctrl / pinmux 腳位功能檢查與切換
 - [[NVIDIA Jetson Device Tree Overlay (DTBO) 完整指南]] — Jetson 平台啟用硬體節點的方式
 - [[Linux 系統 Serial Port (UART) 命名與綁定指南]] — 另一種常見序列介面的對照知識
 - [[I3C-匯流排技術與Linux驅動架構]] — 嵌入式匯流排家族的其他成員
