@@ -86,3 +86,7 @@ umount /mnt
 gzip -9 ../initrd.img
 
 ```
+
+### 相關文章
+
+- 關於 initrd 的完整開機運作機制（UEFI 如何載入、init 流程、各工具鏈製作方式），見 [[UEFI 開機流程完整指南]]。

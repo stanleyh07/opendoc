@@ -7,12 +7,16 @@ tags:
   - USB
   - installer
   - deployment
+  - multi-image
+  - ventoy-like
 created: 2026-07-11
-modified: 2026-07-11
+modified: 2026-07-12
 aliases:
   - AGX Orin USB 安裝碟
   - Jetson USB Installer
   - 可重複使用安裝碟
+  - Jetson Ventoy
+  - 多映像 USB 安裝碟
 ---
 
 # Jetson AGX Orin 可重複使用 USB 安裝碟製作
@@ -26,13 +30,16 @@ aliases:
 > - 少量部署（2-10 台）需要快速更新安裝內容
 > - 需要保留官方 NVIDIA ISO 的 boot loader 以確保相容性
 
+此外，本方案支援 **Ventoy-like 多映像架構**，一個 USB 碟可存放多個映像版本，透過選單選擇要部署的版本，無需重建 USB。詳見 [[#3.3 Ventoy-like 多映像架構]]。
+
 ### 與既有方案比較
 
-| 方案 | 更新安裝內容 | 重複使用性 | 官方 boot loader | 複雜度 |
-|------|-------------|-----------|-----------------|--------|
-| 官方 ISO（dd 寫入） | 需重新製作 ISO | 低 | ✅ 完整 | 低 |
-| jetson-live-iso | 需重新執行 build script | 中 | ✅ 完整 | 中 |
-| **本方案（分區式 USB）** | **替換資料分割區檔案** | **高** | ✅ 從 ISO 提取 | 中 |
+| 方案 | 更新安裝內容 | 重複使用性 | 多版本支援 | 官方 boot loader | 複雜度 |
+|------|-------------|-----------|-----------|-----------------|--------|
+| 官方 ISO（dd 寫入） | 需重新製作 ISO | 低 | ❌ | ✅ 完整 | 低 |
+| jetson-live-iso | 需重新執行 build script | 中 | ❌ | ✅ 完整 | 中 |
+| 本方案（分區式 USB） | 替換資料分割區檔案 | 高 | ❌ | ✅ 從 ISO 提取 | 中 |
+| **本方案（Ventoy-like 模式）** | **替換 images/ 目錄檔案** | **高** | **✅ 多版本** | **✅ 從 ISO 提取** | **中** |
 
 ---
 
@@ -101,10 +108,20 @@ USB 碟分區佈局
 │   │   ├── partition-nvme.sh     # NVMe 分區腳本
 │   │   ├── copy-rootfs.sh        # rootfs 複製腳本
 │   │   └── setup-bootloader.sh   # bootloader 設定腳本
-│   ├── bsp/                     # BSP 檔案
-│   │   ├── kernel/               # Image, initrd, DTB
-│   │   ├── rootfs/               # rootfs 壓縮包或目錄
-│   │   └── modules/              # 核心模組
+│   ├── scripts/                  # 多映像掃描與選單腳本
+│   │   ├── scan-images.sh        # 掃描可用映像
+│   │   └── generate-menu.sh      # 產生選單
+│   ├── images/                   # 多映像目錄（Ventoy-like）
+│   │   ├── v1.0-jetpack6/
+│   │   │   ├── manifest.json     # 映像 metadata
+│   │   │   ├── rootfs.tar.gz     # rootfs 壓縮包
+│   │   │   ├── modules/          # 核心模組
+│   │   │   ├── kernel/           # Image, initrd, DTB
+│   │   │   └── bootloader/       # extlinux.conf 範本
+│   │   ├── v2.0-jetpack7/
+│   │   │   └── ...
+│   │   └── custom-build/
+│   │       └── ...
 │   └── config/                   # 設定檔
 │       └── install.conf          # 安裝參數
 └── (未使用空間)
@@ -115,10 +132,93 @@ USB 碟分區佈局
 ```
 更新安裝內容（無需重建 USB）：
 1. 掛載 USB 的 DATA 分區
-2. 替換 bsp/kernel/ 中的 Image、initrd、DTB
-3. 替換 bsp/rootfs/ 中的 rootfs
-4. 更新 bsp/modules/ 中的核心模組
-5. 完成！下次開機自動使用新版本
+2. 替換 images/ 目錄中對應版本的檔案
+3. 確保每個映像目錄包含 manifest.json
+4. 完成！下次開機自動掃描並顯示所有可用映像
+```
+
+### 3.3 Ventoy-like 多映像架構
+
+本節說明如何將 USB 安裝碟升級為支援多映像版本的 Ventoy-like 架構。
+
+#### 核心概念
+
+與 Ventoy 在 PC 平台上的運作方式類似，本方案讓一個 USB 碟存放多個系統映像版本，使用者開機時可透過選單選擇要部署的版本。差異在於：
+
+| 面向 | Ventoy (PC) | Jetson Installer USB |
+|------|-------------|---------------------|
+| Bootloader | 自訂 GRUB (安裝在 USB) | NVIDIA UEFI (QSPI) + USB extlinux.conf |
+| 映像格式 | 直接掛載 ISO | rootfs 目錄/壓縮包 |
+| 虛擬化方式 | Sector-level block device mapping | 檔案-level 複製到 NVMe |
+| 開機方式 | USB → GRUB → 掛載 ISO → 開機 | USB → UEFI → Installer 環境 → 部署到 NVMe |
+| 最終開機 | 從 USB 直接開機 ISO | 從 NVMe 開機 |
+| 多版本支援 | ✅ 多個 ISO | ✅ 多個映像目錄 |
+| 更新方式 | 替換 ISO 檔案 | 替換 images/ 目錄下的檔案 |
+
+#### 映像目錄結構
+
+每個映像版本在 `images/` 目錄下有獨立的子目錄，結構如下：
+
+```
+images/<version>/
+├── manifest.json           # 映像 metadata（必填）
+├── rootfs.tar.gz           # rootfs 壓縮包（必填）
+├── modules/                # 核心模組（必填）
+│   └── lib/modules/<version>/
+├── kernel/                 # 核心相關檔案（必填）
+│   ├── Image               # 核心映像
+│   ├── initrd              # 初始 ramdisk
+│   └── *.dtb               # Device Tree Blobs
+└── bootloader/             # Bootloader 設定（選填）
+    ├── extlinux.conf       # extlinux 設定檔
+    └── ESP/                # EFI System Partition 內容
+        └── EFI/BOOT/
+```
+
+#### manifest.json 格式
+
+```json
+{
+  "name": "JetPack 7.2 - L4T R39.2",
+  "version": "v2.0",
+  "l4t_version": "R39.2",
+  "target_board": "jetson-agx-orin-devkit",
+  "created": "2026-07-12",
+  "description": "標準 JetPack 7.2 安裝映像",
+  "kernel_image": "kernel/Image",
+  "initrd_image": "kernel/initrd",
+  "dtb_file": "kernel/tegra234-p3701-0000+p3701-0000-nv.dtb",
+  "rootfs_archive": "rootfs.tar.gz",
+  "modules_dir": "modules/",
+  "rootfs_size": "32GiB",
+  "partition_config": {
+    "esp_size": "512MiB",
+    "boot_size": "1GiB",
+    "rootfs_size": "remaining"
+  }
+}
+```
+
+#### 使用流程
+
+```mermaid
+flowchart TD
+    A[USB 插入 Jetson AGX Orin] --> B[Power On]
+    B --> C[TegraBoot → UEFI]
+    C --> D[UEFI 讀取 USB EFI 分區]
+    D --> E[L4TLauncher 讀取 extlinux.conf]
+    E --> F[載入 installer kernel + initrd]
+    F --> G[啟動 installer 環境]
+    G --> H[scan-images.sh 掃描 images/ 目錄]
+    H --> I[顯示可用映像版本選單]
+    I --> J{使用者選擇版本}
+    J --> K[讀取 manifest.json]
+    K --> L[分割 NVMe]
+    L --> M[複製 rootfs + modules]
+    M --> N[安裝 bootloader 設定]
+    N --> O[部署完成]
+    O --> P[移除 USB → 重啟]
+    P --> Q[從 NVMe 開機成功]
 ```
 
 ---
@@ -310,6 +410,241 @@ echo "=== 安裝完成 ==="
 echo "請移除 USB 碟，重啟系統"
 ```
 
+### 4.6 多映像掃描與選單腳本
+
+以下腳本用於掃描 USB DATA 分區上的可用映像並產生選單。
+
+#### scan-images.sh
+
+```bash
+#!/bin/bash
+# scan-images.sh — 掃描 USB DATA 分區上的可用映像
+set -euo pipefail
+
+IMAGES_DIR="${1:-/mnt/usb_data/images}"
+MANIFEST_LIST=()
+
+echo "=== 掃描可用映像 ==="
+echo "掃描目錄：${IMAGES_DIR}"
+echo ""
+
+if [ ! -d "${IMAGES_DIR}" ]; then
+  echo "錯誤：映像目錄不存在 ${IMAGES_DIR}"
+  exit 1
+fi
+
+INDEX=1
+for image_dir in "${IMAGES_DIR}"/*/; do
+  [ -d "${image_dir}" ] || continue
+  
+  manifest="${image_dir}manifest.json"
+  if [ ! -f "${manifest}" ]; then
+    echo "[${INDEX}] $(basename "${image_dir}") — ⚠️ 缺少 manifest.json，已跳過"
+    continue
+  fi
+  
+  # 讀取 manifest
+  name=$(jq -r '.name // "未命名"' "${manifest}")
+  version=$(jq -r '.version // "unknown"' "${manifest}")
+  l4t=$(jq -r '.l4t_version // "unknown"' "${manifest}")
+  desc=$(jq -r '.description // ""' "${manifest}")
+  
+  echo "[${INDEX}] ${name}"
+  echo "    版本：${version} | L4T：${l4t}"
+  [ -n "${desc}" ] && echo "    說明：${desc}"
+  echo "    路徑：${image_dir}"
+  echo ""
+  
+  MANIFEST_LIST+=("${manifest}")
+  INDEX=$((INDEX + 1))
+done
+
+if [ ${#MANIFEST_LIST[@]} -eq 0 ]; then
+  echo "未找到任何可用映像"
+  exit 1
+fi
+
+echo "共找到 ${#MANIFEST_LIST[@]} 個可用映像"
+```
+
+#### generate-menu.sh
+
+```bash
+#!/bin/bash
+# generate-menu.sh — 根據掃描結果產生互動式選單
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${SCRIPT_DIR}/../config/install.conf"
+
+# 掃描映像
+echo "正在掃描可用映像..."
+mapfile -t manifests < <(find "${IMAGES_DIR}" -name "manifest.json" -type f | sort)
+
+if [ ${#manifests[@]} -eq 0 ]; then
+  echo "錯誤：未找到任何可用映像"
+  echo "請將映像目錄放入 ${IMAGES_DIR}/"
+  exit 1
+fi
+
+echo ""
+echo "=========================================="
+echo "  Jetson AGX Orin 映像部署工具"
+echo "=========================================="
+echo ""
+echo "可用映像："
+echo ""
+
+for i in "${!manifests[@]}"; do
+  manifest="${manifests[$i]}"
+  name=$(jq -r '.name // "未命名"' "${manifest}")
+  version=$(jq -r '.version // "unknown"' "${manifest}")
+  l4t=$(jq -r '.l4t_version // "unknown"' "${manifest}")
+  printf "  [%d] %s (v%s, L4T %s)\n" $((i+1)) "${name}" "${version}" "${l4t}"
+done
+
+echo ""
+read -p "請選擇映像編號 [1-${#manifests[@]}]：" choice
+
+if ! [[ "${choice}" =~ ^[0-9]+$ ]] || [ "${choice}" -lt 1 ] || [ "${choice}" -gt ${#manifests[@]} ]; then
+  echo "無效的選擇"
+  exit 1
+fi
+
+SELECTED_MANIFEST="${manifests[$((choice-1))]}"
+echo ""
+echo "已選擇：$(jq -r '.name' "${SELECTED_MANIFEST}")"
+echo ""
+
+read -p "確認要在 ${NVME_DEVICE} 上安裝此映像？（輸入 yes 確認）：" confirm
+if [ "${confirm}" != "yes" ]; then
+  echo "已取消安裝"
+  exit 0
+fi
+
+# 執行安裝
+echo ""
+echo "[1/4] 分割 NVMe..."
+"${SCRIPT_DIR}/partition-nvme.sh" "${SELECTED_MANIFEST}"
+
+echo "[2/4] 複製 rootfs..."
+"${SCRIPT_DIR}/copy-rootfs.sh" "${SELECTED_MANIFEST}"
+
+echo "[3/4] 安裝核心模組..."
+"${SCRIPT_DIR}/install-modules.sh" "${SELECTED_MANIFEST}"
+
+echo "[4/4] 安裝 bootloader..."
+"${SCRIPT_DIR}/setup-bootloader.sh" "${SELECTED_MANIFEST}"
+
+echo ""
+echo "=== 安裝完成 ==="
+echo "請移除 USB 碟，重啟系統"
+```
+
+### 4.7 映像打包工具
+
+以下腳本用於將客製化的 BSP 打包為標準映像格式，以便放入 USB 的 `images/` 目錄。
+
+#### package-image.sh
+
+```bash
+#!/bin/bash
+# package-image.sh — 將 BSP 打包為標準映像格式
+set -euo pipefail
+
+usage() {
+  echo "用法：$0 -n <name> -v <version> -l <l4t_version> -s <source_bsp_dir> -o <output_dir>"
+  echo ""
+  echo "選項："
+  echo "  -n  映像名稱（例：JetPack 7.2 Custom）"
+  echo "  -v  版本號（例：v1.0）"
+  echo "  -l  L4T 版本（例：R39.2）"
+  echo "  -s  來源 BSP 目錄（Linux_for_Tegra 路徑）"
+  echo "  -o  輸出目錄"
+  exit 1
+}
+
+while getopts "n:v:l:s:o:" opt; do
+  case ${opt} in
+    n) IMAGE_NAME="${OPTARG}" ;;
+    v) VERSION="${OPTARG}" ;;
+    l) L4T_VERSION="${OPTARG}" ;;
+    s) BSP_DIR="${OPTARG}" ;;
+    o) OUTPUT_DIR="${OPTARG}" ;;
+    *) usage ;;
+  esac
+done
+
+[ -z "${IMAGE_NAME:-}" ] || [ -z "${VERSION:-}" ] || [ -z "${L4T_VERSION:-}" ] || \
+[ -z "${BSP_DIR:-}" ] || [ -z "${OUTPUT_DIR:-}" ] && usage
+
+echo "=== 映像打包工具 ==="
+echo "映像名稱：${IMAGE_NAME}"
+echo "版本：${VERSION}"
+echo "L4T 版本：${L4T_VERSION}"
+echo "來源 BSP：${BSP_DIR}"
+echo "輸出目錄：${OUTPUT_DIR}"
+echo ""
+
+# 建立輸出目錄
+IMAGE_DIR="${OUTPUT_DIR}/${VERSION}"
+mkdir -p "${IMAGE_DIR}"/{kernel,modules,bootloader/ESP/EFI/BOOT}
+
+# 1. 複製核心映像
+echo "[1/5] 複製核心映像..."
+cp "${BSP_DIR}/kernel/Image" "${IMAGE_DIR}/kernel/"
+cp "${BSP_DIR}/kernel/dtb/"*.dtb "${IMAGE_DIR}/kernel/"
+
+# 2. 複製 initrd
+echo "[2/5] 複製 initrd..."
+cp "${BSP_DIR}/bootloader/initrd"* "${IMAGE_DIR}/kernel/initrd" 2>/dev/null || \
+cp "${BSP_DIR}/rootfs/boot/initrd"* "${IMAGE_DIR}/kernel/initrd" 2>/dev/null || \
+echo "警告：未找到 initrd，請手動複製"
+
+# 3. 複製核心模組
+echo "[3/5] 複製核心模組..."
+if [ -d "${BSP_DIR}/rootfs/lib/modules" ]; then
+  cp -r "${BSP_DIR}/rootfs/lib/modules" "${IMAGE_DIR}/modules/"
+else
+  echo "警告：未找到核心模組目錄"
+fi
+
+# 4. 產生 rootfs 壓縮包
+echo "[4/5] 產生 rootfs 壓縮包..."
+tar czf "${IMAGE_DIR}/rootfs.tar.gz" -C "${BSP_DIR}/rootfs" .
+
+# 5. 產生 manifest.json
+echo "[5/5] 產生 manifest.json..."
+KERNEL_VERSION=$(strings "${IMAGE_DIR}/kernel/Image" | grep -oP 'vermagic=\K[^ ]+' || echo "unknown")
+
+cat > "${IMAGE_DIR}/manifest.json" << EOF
+{
+  "name": "${IMAGE_NAME}",
+  "version": "${VERSION}",
+  "l4t_version": "${L4T_VERSION}",
+  "target_board": "jetson-agx-orin-devkit",
+  "created": "$(date +%Y-%m-%d)",
+  "kernel_version": "${KERNEL_VERSION}",
+  "kernel_image": "kernel/Image",
+  "initrd_image": "kernel/initrd",
+  "dtb_file": "kernel/tegra234-p3701-0000+p3701-0000-nv.dtb",
+  "rootfs_archive": "rootfs.tar.gz",
+  "modules_dir": "modules/",
+  "rootfs_size": "32GiB",
+  "partition_config": {
+    "esp_size": "512MiB",
+    "boot_size": "1GiB",
+    "rootfs_size": "remaining"
+  }
+}
+EOF
+
+echo ""
+echo "=== 打包完成 ==="
+echo "映像目錄：${IMAGE_DIR}"
+echo "請將此目錄複製到 USB 的 images/ 目錄下"
+```
+
 ---
 
 ## 5. 常見問題
@@ -337,6 +672,34 @@ jetson-live-iso 的限制：
 ### 5.4 必須有 initrd 嗎？
 
 JetPack 7+ **必須**有 initrd，因為 NVMe 驅動從 built-in 改為 loadable module。沒有 initrd 將無法在開機時載入 NVMe 驅動，導致找不到 rootfs。
+
+### 5.5 如何更新 USB 上的映像？
+
+只需替換 USB DATA 分區中 `images/` 目錄下對應版本的檔案，無需重建 USB：
+
+1. 掛載 USB DATA 分區：`sudo mount /dev/sdb2 /mnt/usb_data`
+2. 刪除舊版本目錄：`sudo rm -rf /mnt/usb_data/images/v1.0`
+3. 複製新版本目錄：`sudo cp -r /path/to/new/image /mnt/usb_data/images/v1.0`
+4. 卸載：`sudo umount /mnt/usb_data`
+
+### 5.6 如何新增映像版本？
+
+直接將新的映像目錄放入 `images/` 目錄即可。每個映像目錄必須包含：
+- `manifest.json`（metadata）
+- `rootfs.tar.gz`（rootfs 壓縮包）
+- `kernel/`（Image, initrd, DTB）
+- `modules/`（核心模組）
+
+可用 `package-image.sh` 工具自動產生標準格式的映像目錄。
+
+### 5.7 Ventoy 能否直接用在 Jetson 上？
+
+不能。Ventoy 的核心機制依賴 PC UEFI 的 GRUB chain-loading 和 sector-level block device mapping，這些在 Jetson 平台上不可用：
+- Jetson 的 UEFI 在 QSPI NOR Flash（唯讀）
+- Jetson 使用 extlinux.conf 而非 GRUB
+- NVMe 開機需要特定的 initrd 和分區佈局
+
+本方案透過「USB 開機進入 installer 環境 → 部署到 NVMe」的方式達成類似的使用者體驗。
 
 ---
 

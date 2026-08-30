@@ -1,8 +1,23 @@
-以下是根據 NVIDIA 官方開發者指南整理的 **在 Jetson Thor 平台製作 USB 開機磁碟的完整步驟**，我已用 Markdown 格式排版，方便操作與閱讀。
-
+---
+title: 如何製作 Jetson Thor 平台的 USB 開機磁碟
+tags:
+  - NVIDIA
+  - Jetson
+  - Thor
+  - USB
+  - bootable-usb
+  - flashing
+created: 2026-07-10
+modified: 2026-08-30
+aliases:
+  - Jetson Thor USB 開機磁碟
+  - Thor USB boot
+  - USB 開機碟製作
 ---
 
 # 如何製作 Jetson Thor 平台的 USB 開機磁碟
+
+本文件根據 NVIDIA 官方開發者指南整理，說明在 Jetson Thor 平台製作 USB 開機磁碟的完整可操作步驟。
 
 ## 📋 前置準備
 
@@ -92,5 +107,3 @@ sudo tools/l4t_flash_prerequisites.sh
 ## 延伸閱讀
 
 若需要製作**可重複使用**的 USB 安裝碟（更新內容時無需重建 ISO），請參見 [[Jetson AGX Orin 可重複使用 USB 安裝碟製作]]。
-
-這份流程涵蓋了 **完整可操作的步驟**，並包含了針對不同容量 USB 的調整方式。要不要我幫你再整理一份「快速命令清單」版本，讓你在操作時可以直接複製貼上？

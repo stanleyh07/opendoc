@@ -1,4 +1,22 @@
 
+---
+title: Jetson 平台第三方核心模組編譯與部署指南
+tags:
+  - NVIDIA
+  - Jetson
+  - kernel-module
+  - bindeb-pkg
+  - embedded
+created: 2026-07-10
+modified: 2026-08-30
+aliases:
+  - Jetson 核心模組編譯
+  - Jetson 第三方模組
+  - kernel module 打包
+---
+
+# Jetson 平台第三方核心模組編譯與部署指南
+
 ## 1. 核心目標
 
 本指南旨在說明如何在不提供完整核心原始碼（Kernel Source）的前提下，為 NVIDIA Jetson 平台建立獨立的建置環境。透過此環境，第三方開發者可以直接在 Jetson 機器上編譯並載入核心模組（`.ko` 檔），同時徹底避免 `symbol version mismatch`（符號版本不匹配）等載入錯誤。

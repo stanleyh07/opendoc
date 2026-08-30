@@ -299,7 +299,7 @@ bootloader/jetson-agx-thor-devkit/
 > echo 2048 | sudo tee /sys/module/usbcore/parameters/usbfs_memory_mb
 > echo -1 | sudo tee /sys/module/usbcore/parameters/autosuspend
 > ```
-> 詳見 [[SDKManager Docker 刷機指南#2.2 解除 USB 寫入瓶頸與休眠限制]]。
+> 詳見 [[SDKManager Docker 刷機指南#1.3 前置作業：解除 USB 寫入瓶頸與休眠限制]]。
 
 ### 6.2 USB 開機磁碟
 
@@ -619,6 +619,8 @@ modinfo <module.ko> | grep vermagic
 ### 10.5 可重複使用 USB 安裝碟
 
 若需要製作一個可重複使用的 USB 安裝碟（更新內容時無需重建 ISO），參見 [[Jetson AGX Orin 可重複使用 USB 安裝碟製作]]。
+
+該方案支援 **Ventoy-like 多映像架構**，一個 USB 碟可存放多個映像版本，透過選單選擇要部署的版本。
 
 ---
 

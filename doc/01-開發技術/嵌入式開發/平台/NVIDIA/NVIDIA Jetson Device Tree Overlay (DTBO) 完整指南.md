@@ -1,3 +1,18 @@
+---
+title: NVIDIA Jetson Device Tree Overlay (DTBO) 完整指南
+tags:
+  - jetson
+  - device-tree
+  - dtbo
+  - uefi
+  - embedded
+  - nvidia
+created: 2026-08-22
+modified: 2026-08-22
+aliases:
+  - Jetson DTBO
+  - L4T Overlay
+---
 
 ## 概述
 
@@ -31,10 +46,13 @@ NVIDIA 提供兩種方式來套用 DTBO，兩者的差異如下：
 | 特性 | `OVERLAY_DTB_FILE` | `OVERLAYS` |
 |------|-------------------|------------|
 | **設定位置** | board flash config (`.conf`) | `/boot/extlinux/extlinux.conf` |
-| **套用時機** | 燒錄時寫入 UEFI 分割區 | 開機時由 UEFI 讀取 rootfs |
+| **套用時機** | 燒錄時串接至 QSPI bootloader-dtb partition（見下方底層機制） | 開機時由 UEFI 讀取 rootfs |
 | **影響範圍** | UEFI DTB + Kernel DTB | **僅 Kernel DTB** |
 | **修改方式** | 需重新燒錄 | 直接編輯檔案後重開機 |
 | **條件式套用** | 支援 `board_config` (ids/odm-data/fuse-info) | 無條件全部套用 |
+
+> [!NOTE] 兩條路徑會疊加
+> L4TLauncher 會**依序套用**兩個來源的 overlay：先 QSPI bootloader-dtb 尾端清單（`OVERLAY_DTB_FILE`），再 extlinux.conf 的 `OVERLAYS` 行。若兩邊定義了同一節點的衝突屬性，後套用者（extlinux）覆蓋前者。部署時應避免重複管理同一組設定。
 
 ---
 
@@ -164,6 +182,45 @@ dtc -I dtb -O dts /sys/firmware/fdt | grep -A10 my_device
 dmesg | grep my_device
 ls /dev/my_device*
 ```
+
+### 底層機制：flash.sh 如何處理 OVERLAY_DTB_FILE（R36.x 實測）
+
+> [!IMPORTANT] 常見誤解澄清
+> `OVERLAY_DTB_FILE` 的 dtbo **不是被複製到 rootfs 的 `/boot/`**，而是被**串接（concatenate）到 CPU Bootloader DTB 尾端，燒進 QSPI 的 bootloader-dtb partition**。L4TLauncher 開機時從該 partition 尾端讀出 overlay 清單後套用。
+
+以本機 BSP（L4T R36.5.2）原始碼追蹤的完整流程：
+
+```mermaid
+graph TD
+    A["board .conf<br>OVERLAY_DTB_FILE=..."] --> B["flash.sh:4666-4675<br>mkfilesoft overlay_dtb + cp2local"]
+    B --> C["tegraflash.py --overlay_dtb ..."]
+    C --> D["tegraflash_internal.py:4568<br>tegraflash_concat_overlay_dtb()"]
+    D --> E["dtbo 串接到 TBCDTB 尾端<br>對齊 4K 邊界 + null 結尾"]
+    E --> F["燒錄至 QSPI<br>cpu-bootloader-dtb partition"]
+    F --> G["開機：UEFI L4TLauncher<br>解析 partition 尾端 overlay 清單"]
+    G --> H["套用到 kernel FDT"]
+```
+
+關鍵程式碼位置（`Linux_for_Tegra/`）：
+
+| 檔案 | 位置 | 作用 |
+|------|------|------|
+| `flash.sh` | 第 4666~4675 行 | 逐項處理 `OVERLAY_DTB_FILE`，組出 `--overlay_dtb` 參數 |
+| `bootloader/tegraflash_internal.py` | 第 4568 行 `tegraflash_concat_overlay_dtb()` | 將 dtbo 清單串接至 `--bldtb`（CPU Bootloader DTB）尾端，補齊 4K 邊界並寫入 null terminator |
+| `p3737-0000-p3701-0000.conf` | 第 117 行 | AGX Orin devkit 預設 overlay 清單 |
+
+由此機制可推導出幾個重要結論：
+
+1. **修改 conf 後必須重燒**才會生效——內容固化在 QSPI，非 rootfs 檔案
+2. **rootfs 不會自動帶有這些 dtbo 檔案**——若除錯時想在目標板上檢視，需自行將 dtbo 放入 rootfs 定製流程
+3. **與 initrd 完全無關**——overlay 合併發生在 UEFI/L4TLauncher 階段（載入 kernel *之前*）；initrd 是 kernel 載入後才掛起的臨時 rootfs。`l4t_initrd_flash.sh` 中的 initrd 僅是燒錄過程的搬運工具，兩者皆不需為 overlay 做任何處理
+
+### A/B Rootfs（RootFS Redundancy）注意事項
+
+啟用 rootfs redundancy 時：
+
+- `OVERLAY_DTB_FILE`（QSPI 路徑）：單一份、兩個 slot 共用，重燒即同時生效
+- `OVERLAYS`（extlinux 路徑）：每個 slot 各自的 `/boot` 都要放置 dtbo 並維護 extlinux.conf，否則切換 slot 後 overlay 失效
 
 ---
 
