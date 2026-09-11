@@ -327,7 +327,7 @@ candump can0 -x
 
 > [!TIP] cansend / candump 語法速記
 > - `can_id#data`：如 `123#DEADBEEF`
-> - `can_id##0data` 或 `can_id##1data`：CAN FD 幀（`##0` 為 BRS 開、`##1` 為 BRS 關）
+> - `can_id##0data` 或 `can_id##1data`：CAN FD 幀（`##0` 為 BRS 關、`##1` 為 BRS 開）
 > - `candump can0,ID:mask`：mask 中 1 的位元才比較；`123:7FF` 代表 11-bit ID 全比較
 
 ### 4.5 虛擬 CAN（VCAN）— 沒有硬體也能測
