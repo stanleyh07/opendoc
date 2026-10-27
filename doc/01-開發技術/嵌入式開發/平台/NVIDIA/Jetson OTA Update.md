@@ -8,7 +8,7 @@ tags:
   - rootfs-redundancy
   - deployment
 created: 2026-07-10
-modified: 2026-08-30
+modified: 2026-09-11
 aliases:
   - Jetson OTA
   - OTA 更新
@@ -157,4 +157,5 @@ $TARGET_BSP/bootloader/jetson-orin-nano-devkit/ota_payload_package.tar.gz
 - [Software Packages and the Update Mechanism — NVIDIA Jetson Linux Developer Guide 1 documentation](https://docs.nvidia.com/jetson/archives/r36.4/DeveloperGuide/SD/SoftwarePackagesAndTheUpdateMechanism.html#sd-softwarepackagesandtheupdatemechanism)
 - [Jetson Linux | NVIDIA Developer](https://developer.nvidia.com/embedded/jetson-linux-r3640)
 - 更多 OTA 更新細節，可參考 NVIDIA Jetson Linux 開發指南 OTA 章節。
-- 相關知識庫文章：[[Nvidia Jetson AB Partition 切換]]、[[Jetson 系統映像客製化與燒錄完整指南]]
+- 相關知識庫文章：[[Nvidia Jetson AB Partition 切換]]、[[Jetson 系統映像客製化與燒錄完整指南]]、[[NVIDIA Jetson CRA SBOM 實作指南]]
+- 歐盟 CRA 對漏洞修補與 OTA 的合規要求，見 [[歐盟 CRA 網路韌性法案與 SBOM 合規]]。

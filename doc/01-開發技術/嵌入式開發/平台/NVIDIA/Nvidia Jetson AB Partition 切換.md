@@ -8,7 +8,7 @@ tags:
   - bootloader
   - nvbootctrl
 created: 2026-07-10
-modified: 2026-08-30
+modified: 2026-09-11
 aliases:
   - Jetson AB Partition
   - Jetson A/B rootfs 切換
@@ -101,3 +101,5 @@ A/B 機制將系統分割為兩個獨立的 slot（`rootfs_A` / `rootfs_B`，對
 - [[Jetson AGX Orin 開機流程與客製化指南]]
 - [[Jetson AGX Orin DTB 載入機制與判斷邏輯]]
 - [[Jetson OTA Update]]
+- [[NVIDIA Jetson CRA SBOM 實作指南]]
+- [[歐盟 CRA 網路韌性法案與 SBOM 合規]]
